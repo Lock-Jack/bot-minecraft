@@ -2,8 +2,8 @@ const mineflayer = require('mineflayer');
 
 // --- CONFIGURATION DE VOTRE SERVEUR ATERNOS ---
 const CONFIG = {
-  host: 'votre-serveur.aternos.me', // L'adresse IP / Nom de domaine Aternos
-  port: 12345,                      // Le port à 5 chiffres fourni par Aternos
+  host: 'Emeraldteam.aternos.me', // L'adresse IP / Nom de domaine Aternos
+  port: 56996,                      // Le port à 5 chiffres fourni par Aternos
   username: 'Bot_AntiAFK',          // Le pseudo du bot
   version: false                    // 'false' détection automatique de la version
 };
