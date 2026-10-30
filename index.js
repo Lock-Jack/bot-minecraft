@@ -1,97 +1,253 @@
 const mineflayer = require('mineflayer');
+const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
 
-// --- CONFIGURATION DE VOTRE SERVEUR ATERNOS ---
+// --- CONFIGURATION ---
 const CONFIG = {
-  host: 'Emeraldteam.aternos.me', // L'adresse IP / Nom de domaine Aternos
-  port: 56996,                      // Le port à 5 chiffres fourni par Aternos
-  username: 'Bot_AntiAFK',          // Le pseudo du bot
-  version: false                    // 'false' détection automatique de la version
+  host: 'Emeraldteam.aternos.me',
+  port: 56996,
+  username: 'Bot_AntiAFK', // idéalement un pseudo plus "humain" (ex: Kevin_Mada)
+  version: false,
+  wanderRadius: 8,         // rayon de balade autour du point de spawn
 };
 
+// --- OUTILS ---
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const rand = (min, max) => Math.random() * (max - min) + min;
+const randInt = (min, max) => Math.floor(rand(min, max + 1));
+const chance = (p) => Math.random() < p;
+
+// Durée "humaine" : distribution proche d'une gaussienne (plus de valeurs au milieu)
+function humanDelay(min, max) {
+  const g = (Math.random() + Math.random() + Math.random()) / 3;
+  return min + g * (max - min);
+}
+
+const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
+
+// Rotation fluide de la caméra (comme une souris)
+async function smoothLook(bot, targetYaw, targetPitch, duration = rand(250, 700)) {
+  const startYaw = bot.entity.yaw;
+  const startPitch = bot.entity.pitch;
+
+  // Chemin le plus court pour le yaw
+  let dYaw = targetYaw - startYaw;
+  dYaw = Math.atan2(Math.sin(dYaw), Math.cos(dYaw));
+  const dPitch = targetPitch - startPitch;
+
+  const steps = Math.max(5, Math.floor(duration / 50));
+  for (let i = 1; i <= steps; i++) {
+    const t = ease(i / steps);
+    await bot.look(startYaw + dYaw * t, startPitch + dPitch * t, true);
+    await sleep(duration / steps);
+  }
+}
+
+// --- COMPORTEMENTS ---
+const behaviors = {
+  // Regarder autour de soi (petits mouvements, pitch limité)
+  async lookAround(bot) {
+    const n = randInt(1, 3);
+    for (let i = 0; i < n; i++) {
+      const yaw = bot.entity.yaw + rand(-1.8, 1.8);
+      const pitch = rand(-0.5, 0.4);
+      await smoothLook(bot, yaw, pitch);
+      await sleep(humanDelay(300, 1500));
+    }
+  },
+
+  // Se balader vers un point proche du spawn
+  async wander(bot, ctx) {
+    const angle = rand(0, Math.PI * 2);
+    const dist = rand(2, CONFIG.wanderRadius);
+    const x = ctx.home.x + Math.cos(angle) * dist;
+    const z = ctx.home.z + Math.sin(angle) * dist;
+    try {
+      bot.pathfinder.setGoal(new goals.GoalNearXZ(x, z, 1));
+      // On laisse marcher quelques secondes puis on arrête
+      await sleep(humanDelay(2000, 6000));
+    } finally {
+      bot.pathfinder.setGoal(null);
+    }
+  },
+
+  // Sauter (parfois deux fois)
+  async jump(bot) {
+    const times = chance(0.25) ? 2 : 1;
+    for (let i = 0; i < times; i++) {
+      bot.setControlState('jump', true);
+      await sleep(rand(100, 250));
+      bot.setControlState('jump', false);
+      await sleep(rand(200, 500));
+    }
+  },
+
+  // Courir en avant en sautant un moment
+  async sprintJump(bot) {
+    await smoothLook(bot, bot.entity.yaw + rand(-1, 1), rand(-0.1, 0.2));
+    bot.setControlState('forward', true);
+    bot.setControlState('sprint', true);
+    const end = Date.now() + humanDelay(1000, 3000);
+    while (Date.now() < end) {
+      bot.setControlState('jump', true);
+      await sleep(150);
+      bot.setControlState('jump', false);
+      await sleep(rand(300, 600));
+    }
+    bot.setControlState('forward', false);
+    bot.setControlState('sprint', false);
+  },
+
+  // S'accroupir brièvement (ou plusieurs fois d'affilée)
+  async sneak(bot) {
+    const times = randInt(1, 4);
+    for (let i = 0; i < times; i++) {
+      bot.setControlState('sneak', true);
+      await sleep(rand(150, 500));
+      bot.setControlState('sneak', false);
+      await sleep(rand(100, 400));
+    }
+  },
+
+  // Agiter le bras (comme un clic)
+  async swingArm(bot) {
+    const times = randInt(1, 3);
+    for (let i = 0; i < times; i++) {
+      bot.swingArm(chance(0.8) ? 'right' : 'left');
+      await sleep(rand(200, 600));
+    }
+  },
+
+  // Changer d'emplacement dans la barre d'objets
+  async hotbar(bot) {
+    bot.setQuickBarSlot(randInt(0, 8));
+    await sleep(rand(200, 600));
+  },
+
+  // Regarder le joueur le plus proche, s'il y en a un
+  async watchPlayer(bot) {
+    const target = bot.nearestEntity((e) => e.type === 'player' && e !== bot.entity);
+    if (!target) return behaviors.lookAround(bot);
+    const pos = target.position.offset(0, target.height * 0.9, 0);
+    const end = Date.now() + humanDelay(1500, 4000);
+    while (Date.now() < end && target.isValid) {
+      await bot.lookAt(pos, false);
+      await sleep(rand(200, 500));
+    }
+  },
+
+  // Ne rien faire (le comportement le plus "humain")
+  async idle(bot) {
+    await sleep(humanDelay(2000, 8000));
+  },
+};
+
+// Poids : plus le chiffre est grand, plus l'action est fréquente
+const WEIGHTS = [
+  ['idle', 20],
+  ['lookAround', 22],
+  ['wander', 16],
+  ['jump', 10],
+  ['sneak', 8],
+  ['swingArm', 8],
+  ['hotbar', 6],
+  ['watchPlayer', 6],
+  ['sprintJump', 4],
+];
+
+function pickBehavior(last) {
+  let pool = WEIGHTS.filter(([name]) => name !== last); // évite de répéter la même action
+  const total = pool.reduce((s, [, w]) => s + w, 0);
+  let r = Math.random() * total;
+  for (const [name, w] of pool) {
+    if ((r -= w) <= 0) return name;
+  }
+  return 'idle';
+}
+
+// --- BOUCLE PRINCIPALE DU "JOUEUR" ---
+async function humanLoop(bot, ctx) {
+  let last = null;
+  // Petite pause initiale après le spawn
+  await sleep(rand(2000, 5000));
+
+  while (ctx.alive) {
+    const name = pickBehavior(last);
+    last = name;
+    console.log(`[Humain] ${name}`);
+
+    try {
+      await behaviors[name](bot, ctx);
+    } catch (e) {
+      console.error(`[Humain] erreur dans ${name}:`, e.message);
+    }
+
+    // Toujours remettre les contrôles à zéro
+    bot.clearControlStates();
+
+    // Pause irrégulière entre deux actions, avec de longues "pauses café" occasionnelles
+    const pause = chance(0.1) ? humanDelay(15000, 45000) : humanDelay(3000, 15000);
+    await sleep(pause);
+  }
+}
+
+// --- CONNEXION ---
+let retryDelay = 15000;
+
 function createBotInstance() {
-  console.log(`Tentative de connexion à ${CONFIG.host}:${CONFIG.port}...`);
+  console.log(`Connexion à ${CONFIG.host}:${CONFIG.port}...`);
 
   const bot = mineflayer.createBot({
     host: CONFIG.host,
     port: CONFIG.port,
     username: CONFIG.username,
-    version: CONFIG.version
+    version: CONFIG.version,
   });
 
-  // Dès que le bot apparaît dans le monde
-  bot.on('spawn', () => {
-    console.log(`[+] ${CONFIG.username} s'est connecté au serveur avec succès !`);
-    startAntiAfk(bot);
+  bot.loadPlugin(pathfinder);
+  const ctx = { alive: false, home: null };
+
+  bot.once('spawn', () => {
+    console.log(`[+] ${CONFIG.username} connecté !`);
+    retryDelay = 15000; // reset du délai de reconnexion
+
+    const moves = new Movements(bot);
+    moves.canDig = false;          // ne casse aucun bloc
+    moves.allowSprinting = true;
+    bot.pathfinder.setMovements(moves);
+
+    ctx.home = bot.entity.position.clone();
+    ctx.alive = true;
+    humanLoop(bot, ctx);
   });
 
-  // Quand le bot reçoit un message du chat
-  bot.on('chat', (username, message) => {
+  // Réagir au chat comme un joueur, sans spammer
+  bot.on('chat', async (username, message) => {
     if (username === bot.username) return;
     console.log(`<${username}> ${message}`);
-  });
 
-  // Gestion des erreurs et déconnexions
-  bot.on('end', (reason) => {
-    console.log(`[-] Déconnecté du serveur. Raison : ${reason}`);
-    console.log('Nouvelle tentative dans 15 secondes...');
-    setTimeout(createBotInstance, 15000); // Reconnexion automatique
-  });
-
-  bot.on('error', (err) => {
-    console.error('Erreur du bot :', err.message);
-  });
-}
-
-// --- SYSTEME DE MOUVEMENT ANTI-AFK ---
-function startAntiAfk(bot) {
-  // Intervalle d'action : toutes les 30 à 60 secondes (aléatoire)
-  const getRandomTime = () => Math.floor(Math.random() * (60000 - 30000) + 30000);
-
-  function executeRandomAction() {
-    if (!bot || !bot.entity) return;
-
-    const action = Math.floor(Math.random() * 4);
-
-    switch (action) {
-      case 0:
-        // Action : Sauter
-        console.log('[Anti-AFK] Saut');
-        bot.setControlState('jump', true);
-        setTimeout(() => bot.setControlState('jump', false), 400);
-        break;
-
-      case 1:
-        // Action : Tourner la tête dans une direction aléatoire
-        console.log('[Anti-AFK] Regard aléatoire');
-        const yaw = (Math.random() * 360 - 180) * (Math.PI / 180);
-        const pitch = (Math.random() * 180 - 90) * (Math.PI / 180);
-        bot.look(yaw, pitch, true);
-        break;
-
-      case 2:
-        // Action : Faire un petit pas vers l'avant ou l'arrière
-        const direction = Math.random() > 0.5 ? 'forward' : 'back';
-        console.log(`[Anti-AFK] Pas vers : ${direction}`);
-        bot.setControlState(direction, true);
-        setTimeout(() => bot.setControlState(direction, false), 600);
-        break;
-
-      case 3:
-        // Action : Se baisser (s'accroupir)
-        console.log('[Anti-AFK] Accroupissement');
-        bot.setControlState('sneak', true);
-        setTimeout(() => bot.setControlState('sneak', false), 1000);
-        break;
+    const mentioned = message.toLowerCase().includes(CONFIG.username.toLowerCase());
+    if (mentioned && chance(0.7)) {
+      const replies = ['hey', 'salut', 'oui ?', 'je suis là', 'yo'];
+      await sleep(humanDelay(1500, 5000)); // temps de "frappe"
+      bot.chat(replies[randInt(0, replies.length - 1)]);
     }
+  });
 
-    // Programme la prochaine action aléatoire
-    setTimeout(executeRandomAction, getRandomTime());
-  }
+  // Quand un joueur approche, on le regarde parfois
+  bot.on('playerJoined', (player) => {
+    if (player.username === bot.username) return;
+    console.log(`[+] ${player.username} a rejoint`);
+  });
 
-  // Lancement du premier cycle
-  setTimeout(executeRandomAction, 5000);
+  bot.on('kicked', (reason) => console.log('[!] Expulsé :', reason));
+  bot.on('error', (err) => console.error('Erreur du bot :', err.message));
+
+  bot.on('end', (reason) => {
+    ctx.alive = false;
+    console.log(`[-] Déconnecté (${reason}). Nouvelle tentative dans ${Math.round(retryDelay / 1000)}s...`);
+    setTimeout(createBotInstance, retryDelay);
+    retryDelay = Math.min(retryDelay * 2, 120000); // backoff : 15s → 30s → 60s → 120s max
+  });
 }
 
-// Lancement initial
 createBotInstance();
-// Note : Assurez-vous d'avoir installé mineflayer via npm avant d'exécuter ce script
