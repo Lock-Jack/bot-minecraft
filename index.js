@@ -16,7 +16,7 @@ const CONFIG = {
   host: 'Emeraldteam.aternos.me',
   port: 56996,
   username: 'bottest', // idéalement un pseudo plus "humain" (ex: Kevin_Mada)
-  version: '1.21.11 (132)',
+  version: '1.21.11',
   wanderRadius: 8,         // rayon de balade autour de la base
 };
 
