@@ -1,6 +1,16 @@
 const mineflayer = require('mineflayer');
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
 
+const http = require('http');
+const PORT = process.env.PORT || 3000;
+
+http
+  .createServer((req, res) => {
+       res.writeHead(200, { 'Content-Type': 'text/plain' });
+       res.end('Bot en ligne');
+     })
+     .listen(PORT, () => console.log(`Serveur HTTP sur le port ${PORT}`));
+
 // --- CONFIGURATION ---
 const CONFIG = {
   host: 'Emeraldteam.aternos.me',
