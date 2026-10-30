@@ -5,7 +5,7 @@ const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
 const CONFIG = {
   host: 'Emeraldteam.aternos.me',
   port: 56996,
-  username: 'Bot_AntiAFK', // idéalement un pseudo plus "humain" (ex: Kevin_Mada)
+  username: 'bottest', // idéalement un pseudo plus "humain" (ex: Kevin_Mada)
   version: false,
   wanderRadius: 8,         // rayon de balade autour du point de spawn
 };
