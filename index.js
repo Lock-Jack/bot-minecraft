@@ -6,10 +6,10 @@ const PORT = process.env.PORT || 3000;
 
 http
   .createServer((req, res) => {
-       res.writeHead(200, { 'Content-Type': 'text/plain' });
-       res.end('Bot en ligne');
-     })
-     .listen(PORT, () => console.log(`Serveur HTTP sur le port ${PORT}`));
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Bot en ligne');
+  })
+  .listen(PORT, () => console.log(`Serveur HTTP sur le port ${PORT}`));
 
 // --- CONFIGURATION ---
 const CONFIG = {
@@ -17,7 +17,7 @@ const CONFIG = {
   port: 56996,
   username: 'bottest', // idéalement un pseudo plus "humain" (ex: Kevin_Mada)
   version: false,
-  wanderRadius: 8,         // rayon de balade autour du point de spawn
+  wanderRadius: 8,         // rayon de balade autour de la base
 };
 
 // --- OUTILS ---
@@ -65,7 +65,7 @@ const behaviors = {
     }
   },
 
-  // Se balader vers un point proche du spawn
+  // Se balader vers un point proche de la base
   async wander(bot, ctx) {
     const angle = rand(0, Math.PI * 2);
     const dist = rand(2, CONFIG.wanderRadius);
@@ -181,6 +181,12 @@ async function humanLoop(bot, ctx) {
   await sleep(rand(2000, 5000));
 
   while (ctx.alive) {
+    // Pause pendant le retour à la base (/warp home)
+    if (ctx.busy) {
+      await sleep(1000);
+      continue;
+    }
+
     const name = pickBehavior(last);
     last = name;
     console.log(`[Humain] ${name}`);
@@ -200,6 +206,27 @@ async function humanLoop(bot, ctx) {
   }
 }
 
+// --- RETOUR À LA BASE ---
+// Tape /warp home puis mémorise la position comme nouveau centre de balade
+async function goHome(bot, ctx) {
+  ctx.busy = true; // met les comportements aléatoires en pause
+  try {
+    bot.pathfinder.setGoal(null);
+    bot.clearControlStates();
+
+    await sleep(rand(3000, 5000)); // attendre le chargement du monde
+    console.log('[Bot] /warp botposition');
+    bot.chat('/warp botposition');
+    await sleep(rand(4000, 6000)); // attendre la téléportation
+
+    ctx.home = bot.entity.position.clone();
+  } catch (e) {
+    console.error('[Bot] erreur dans goHome:', e.message);
+  } finally {
+    ctx.busy = false;
+  }
+}
+
 // --- CONNEXION ---
 let retryDelay = 15000;
 
@@ -214,9 +241,9 @@ function createBotInstance() {
   });
 
   bot.loadPlugin(pathfinder);
-  const ctx = { alive: false, home: null };
+  const ctx = { alive: false, home: null, busy: false };
 
-  bot.once('spawn', () => {
+  bot.once('spawn', async () => {
     console.log(`[+] ${CONFIG.username} connecté !`);
     retryDelay = 15000; // reset du délai de reconnexion
 
@@ -227,7 +254,16 @@ function createBotInstance() {
 
     ctx.home = bot.entity.position.clone();
     ctx.alive = true;
+
+    await goHome(bot, ctx);
     humanLoop(bot, ctx);
+  });
+
+  // À chaque mort : après le respawn automatique, retour à la base
+  bot.on('death', async () => {
+    console.log('[Bot] Mort, respawn en cours...');
+    await sleep(rand(1500, 3000));
+    bot.once('spawn', () => goHome(bot, ctx));
   });
 
   // Réagir au chat comme un joueur, sans spammer
@@ -243,7 +279,6 @@ function createBotInstance() {
     }
   });
 
-  // Quand un joueur approche, on le regarde parfois
   bot.on('playerJoined', (player) => {
     if (player.username === bot.username) return;
     console.log(`[+] ${player.username} a rejoint`);
